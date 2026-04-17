@@ -1,0 +1,5 @@
+.streamlit/secrets.toml
+*.xlsx:Zone.Identifier
+__pycache__/
+*.pyc
+.env
