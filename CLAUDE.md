@@ -94,7 +94,7 @@ token_uri = "https://oauth2.googleapis.com/token"
 
 | 이슈 | 담당 | 상태 |
 |------|------|------|
-| 사회경제지표 6개 탭 C1 헤더 공백 (ZONE 헤더 누락) | 데이터팀 | 🔴 미수정 |
+| 사회경제지표 6개 탭 C1 헤더 공백 (ZONE 헤더 누락) | 데이터팀 | ✅ 완료 (2026-04-18, POP_TOT 스크린샷 확인) |
 | `streamlit_app.py:275` `errors="ignore"` + 콤마 처리 부재 | 개발자 | 🔴 미수정 |
 | OD 쿼리 지역 필터링용 ZONE 조인 미구현 | 개발자 | 🟡 추후 작업 |
 | `requirements.txt`에 `gspread`/`google-auth` 명시 누락 | 개발자 | 🟡 배포 시 문제 |
@@ -105,10 +105,16 @@ token_uri = "https://oauth2.googleapis.com/token"
 
 ```
 KTDB_report_agent/
-├── CLAUDE.md              # 본 파일
-├── streamlit_app.py       # 메인 앱
-├── requirements.txt       # Python 의존성
+├── CLAUDE.md                            # 본 파일
+├── streamlit_app.py                     # 메인 앱
+├── requirements.txt                     # Python 의존성
 ├── .gitignore
 └── docs/
-    └── 왜-데이터-연동이-안되는가.md   # 비개발자용 진단 설명
+    ├── 왜-데이터-연동이-안되는가.md     # 비개발자용 진단 설명 (※ 이슈 A는 완료, 일부 옛 정보)
+    ├── 비개발자-수정-가이드.md          # 비개발자 오너용 단계별 수정 가이드
+    └── 개발자-전달-요청.md              # 개발자 전달용 미수정 이슈 정리 (B/C/D)
 ```
+
+## 변경 이력
+
+- **2026-04-18**: 이슈 A(사회경제지표 6개 탭 C1 헤더) 완료 확인 (POP_TOT 스크린샷 검증). 비개발자 수정 가이드 및 개발자 전달 요청 문서 신규 작성.
