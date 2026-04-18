@@ -125,7 +125,7 @@ def load_sheet(spreadsheet_url: str, tab_name: str) -> pd.DataFrame:
     return df
 
 # ─────────────────────────────────────────────────────────────
-# 6. 존 매핑 & 시군구 목록 동적 로드
+# 6. 시군구 목록 동적 로드
 # ─────────────────────────────────────────────────────────────
 SIDO_LIST = [
     "전체", "서울특별시", "부산광역시", "대구광역시", "인천광역시",
@@ -135,18 +135,10 @@ SIDO_LIST = [
 ]
 
 @st.cache_data(ttl=600, show_spinner=False)
-def get_zone_mapping() -> pd.DataFrame:
-    """존번호 → 시도/시군구 매핑 테이블 로드 (OD 지역 필터용)"""
-    url = st.secrets["SHEET_URL_SOCIO"]
-    df  = load_sheet(url, "존체계(행정구역)")
-    df["ZONE"] = pd.to_numeric(df["ZONE"], errors="coerce")
-    return df[["ZONE", "SIDO", "SIGU"]].dropna()
-
-@st.cache_data(ttl=600, show_spinner=False)
 def get_sigu_list(sido: str) -> list:
     try:
         url = st.secrets["SHEET_URL_SOCIO"]
-        df  = load_sheet(url, "존체계(행정구역)")
+        df  = load_sheet(url, "ZONE")
         if sido != "전체":
             df = df[df["SIDO"].astype(str).str.contains(sido, na=False)]
         return ["전체"] + sorted(df["SIGU"].dropna().unique().tolist())
@@ -249,21 +241,14 @@ with st.sidebar:
 # 9. AI 탭 자동 선택
 # ─────────────────────────────────────────────────────────────
 def ai_route(query: str) -> tuple[str, str]:
-    registry = {
-        fname: {k: v for k, v in cfg["tabs"].items()}
-        for fname, cfg in SHEET_CONFIG.items()
-    }
+    registry = {fname: list(cfg["tabs"].keys()) for fname, cfg in SHEET_CONFIG.items()}
     prompt = f"""
-아래는 KTDB 시트 구성입니다. 각 파일의 탭코드와 한글 설명입니다.
+아래는 KTDB 시트 구성입니다.
 {json.dumps(registry, ensure_ascii=False)}
 
 사용자 질문: "{query}"
 
-가장 적합한 파일명과 탭코드를 JSON으로만 반환하세요.
-- 인구, 종사자, 취업자, 학생 관련 → 사회경제지표
-- 출근, 등교, 업무, 귀가, 통행목적 관련 → 목적OD
-- 승용차, 버스, 지하철, 수단분담률 관련 → 주수단OD
-- 접근수단 관련 → 접근수단OD
+가장 적합한 파일명과 탭명을 JSON으로만 반환하세요.
 예: {{"file": "사회경제지표", "tab": "POP_TOT"}}
 JSON 외 어떤 텍스트도 출력하지 마세요.
 """
@@ -287,31 +272,11 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     for col in df.columns:
         if col not in ("SIDO", "SIGU"):
-            original = df[col].copy()
-            df[col] = df[col].astype(str).str.replace(",", "", regex=False)
-            converted = pd.to_numeric(df[col], errors="coerce")
-            if converted.notna().any():
-                df[col] = converted
-            else:
-                df[col] = original
-
-    # OD 데이터: ORGN/DEST만 있고 SIDO/SIGU 없음 → ZONE 탭 조인으로 지역 매핑
-    if "ORGN" in df.columns and "SIDO" not in df.columns:
-        try:
-            zone_map = get_zone_mapping()
-            df = df.merge(
-                zone_map.rename(columns={"ZONE": "ORGN", "SIDO": "SIDO", "SIGU": "SIGU"}),
-                on="ORGN", how="left"
-            )
-        except Exception:
-            pass  # ZONE 탭 로드 실패 시 필터 없이 진행
-
-    # 지역 필터 적용
+            df[col] = pd.to_numeric(df[col], errors="ignore")
     if "SIDO" in df.columns and sido_sel != "전체":
         df = df[df["SIDO"].astype(str).str.contains(sido_sel, na=False)]
     if "SIGU" in df.columns and sigu_sel != "전체":
         df = df[df["SIGU"].astype(str).str.contains(sigu_sel, na=False)]
-
     sort_col = next((c for c in ["ZONE", "ORGN"] if c in df.columns), None)
     if sort_col:
         df[sort_col] = pd.to_numeric(df[sort_col], errors="coerce")
@@ -359,33 +324,12 @@ def interpolate_years(df: pd.DataFrame, target_years: list[int]) -> tuple[pd.Dat
 # 12. 통합 로드
 # ─────────────────────────────────────────────────────────────
 def load_integrated(file_label: str, tab: str,
-                    target_years: list[int]) -> tuple[pd.DataFrame, list[int], bool]:
+                    target_years: list[int]) -> tuple[pd.DataFrame, list[int]]:
     url = st.secrets[SHEET_CONFIG[file_label]["url_key"]]
     df  = load_sheet(url, tab)
     df  = preprocess(df)
-    numeric_cols = df.select_dtypes(include="number").columns
-    if len(numeric_cols) == 0:
-        raise ValueError(
-            f"'{SHEET_CONFIG[file_label]['tabs'].get(tab, tab)}' 탭에 수치 데이터가 없습니다. "
-            "시트에 연도별 데이터(2023~2050)가 입력되어 있는지 확인해주세요."
-        )
     df, interp = interpolate_years(df, target_years)
-
-    # OD 대용량 데이터: 500행 초과 시 발생존(시도/시군구) 기준 집계
-    aggregated = False
-    if len(df) > 500:
-        num_cols = df.select_dtypes(include="number").columns.tolist()
-        exclude = {"발생존", "도착존", "존번호"}
-        sum_cols = [c for c in num_cols if c not in exclude]
-        if "시도" in df.columns:
-            group_cols = ["시도", "시군구"] if "시군구" in df.columns else ["시도"]
-            df = df.groupby(group_cols, as_index=False)[sum_cols].sum()
-            aggregated = True
-        elif "발생존" in df.columns:
-            df = df.groupby("발생존", as_index=False)[sum_cols].sum()
-            aggregated = True
-
-    return df, interp, aggregated
+    return df, interp
 
 # ─────────────────────────────────────────────────────────────
 # 13. AI 분석 프롬프트 규칙
@@ -462,7 +406,7 @@ if user_input := st.chat_input("질문을 입력하세요 — 예: 경기도 203
         # ③ 데이터 로드
         with st.spinner(f"`{ai_tab}` 데이터 로딩 중..."):
             try:
-                df, interp_years, aggregated = load_integrated(ai_file, ai_tab, target_years)
+                df, interp_years = load_integrated(ai_file, ai_tab, target_years)
             except Exception as e:
                 st.error(f"❌ 데이터 로드 실패: {e}")
                 st.stop()
@@ -472,20 +416,15 @@ if user_input := st.chat_input("질문을 입력하세요 — 예: 경기도 203
             f"\n※ 보간 연도: {interp_years} (선형보간법 적용)"
             if interp_years else ""
         )
-        agg_note = (
-            "\n※ 이 데이터는 지역별 합계로 집계되었습니다. 개별 존간 OD가 아닌 시도/시군구 단위 합산값입니다."
-            if aggregated else ""
-        )
 
         # ④ AI 분석
-        data_sample = df.head(250).to_string(index=False)
+        data_sample = df.head(150).to_string(index=False)
         prompt = (
             f"{SYSTEM_PROMPT}\n\n"
             f"[데이터 정보]\n"
-            f"파일: {ai_file} / 시트: {tab_kr} / 단위: {unit}{interp_note}{agg_note}\n"
+            f"파일: {ai_file} / 시트: {tab_kr} / 단위: {unit}{interp_note}\n"
             f"컬럼: {list(df.columns)}\n"
-            f"총 행 수: {len(df)}행\n"
-            f"데이터(최대 250행):\n{data_sample}\n\n"
+            f"데이터(최대 150행):\n{data_sample}\n\n"
             f"[질문]\n{user_input}"
         )
 

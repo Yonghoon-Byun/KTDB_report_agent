@@ -2,226 +2,113 @@
 
 ## 프로젝트 개요
 
-KTDB(국가교통DB) 데이터를 Google Sheets에서 읽어와 Gemini AI로 자연어 분석하는 Streamlit 웹 애플리케이션.
-사용자가 자연어로 질문하면 AI가 적합한 시트를 자동 선택하고, 데이터 분석 결과를 표+텍스트로 반환한다.
+KTDB(국가교통DB) 데이터를 Google Sheets에서 읽어 Gemini AI로 자연어 분석하는 Streamlit 앱.
 
-## 핵심 기능
+- **프론트엔드**: Streamlit (단일 파일 `streamlit_app.py`)
+- **AI**: Google Gemini 1.5 Flash
+- **데이터**: Google Sheets 4종 (gspread + 서비스 계정)
+- **처리**: pandas
 
-1. **Google Sheets 데이터 연동**: gspread + 서비스 계정 인증으로 4종 시트 실시간 조회
-2. **AI 시트 자동 선택**: 사용자 질문을 분석하여 적합한 시트/탭 자동 라우팅 (한글 설명 + 카테고리 힌트)
-3. **자연어 분석**: Gemini 1.5 Flash로 질문 → 분석 요약 + CSV 표 생성
-4. **연도 보간**: 배포 연도 외 입력 시 선형보간법 자동 적용
-5. **지역 필터링**: 시도/시군구 단위 필터 + OD 데이터 ZONE 탭 조인
-6. **대용량 집계**: OD 62,500행 데이터를 지역별 합산 후 AI에 전달
-7. **CSV 다운로드**: 분석 결과를 CSV로 즉시 내려받기
+## Google Sheets 데이터 소스
 
----
+| 데이터 | URL |
+|--------|-----|
+| 사회경제지표 | https://docs.google.com/spreadsheets/d/1pWLPhj2uz8auxsNIEuT2ovaD-xT7lzYkdgwN3i8Y4Wg/edit?usp=sharing |
+| 목적OD | https://docs.google.com/spreadsheets/d/1du90sQtkdm5OyIx92XhmYAEhb_wpt07elm2jOSZP5Qk/edit?usp=sharing |
+| 주수단OD | https://docs.google.com/spreadsheets/d/1E5tZKWv970J2soQ2n3K8jgz_RPgNPOpHXcuzhbBd3u0/edit?usp=sharing |
+| 접근수단OD | https://docs.google.com/spreadsheets/d/1lHAuh2sHE2vcbNCW-eajBF60gqy4Yy6yy-zQOnD1uhQ/edit?usp=sharing |
 
-## 빠른 시작
+## 시트 스키마 (확인된 실제 구조)
 
-### 로컬 실행
+### 사회경제지표
+- 탭: `ZONE`, `POP_TOT`, `POP_YNG`, `POP_15P`, `EMP`, `STU`, `WORK_TOT` (영어 코드)
+- ZONE 탭 헤더: `SIDO, SIGU, ZONE`
+- 나머지 6개 탭 헤더: `SIDO, SIGU, <빈칸>, 2023, 2025, 2030, 2035, 2040, 2045, 2050`
+  - ⚠️ **C1 셀(3번째 컬럼 헤더)이 비어있음** — `ZONE`으로 입력 필요 (데이터팀 작업)
 
+### 목적OD / 주수단OD
+- 탭: `PUR_{연도}` / `MOD_{연도}` (연도: 2023, 2025, 2030, 2035, 2040, 2045, 2050)
+- 목적OD 헤더: `ORGN, DEST, WORK, SCHO, BUSI, HOME, OTHE`
+- 주수단OD 헤더: `ORGN, DEST, AUTO, OBUS, SUBW, RAIL, ERAI`
+- 각 탭 62,499행
+- ⚠️ **숫자에 콤마 포함** 문자열 (예: `"19,800"`)
+
+### 접근수단OD
+- 탭: `ATTMOD_2023` 단일
+- 헤더: `ORGN, DEST, ATT_AANT, ATT_OBUS`
+
+## 컬럼 코드 ↔ 한글 매핑
+
+| 코드 | 한글 |
+|------|------|
+| SIDO, SIGU, ZONE | 시도, 시군구, 존번호 |
+| ORGN, DEST | 발생존, 도착존 |
+| WORK, SCHO, BUSI, HOME, OTHE | 출근, 등교, 업무, 귀가, 기타 |
+| AUTO, OBUS, SUBW, RAIL, ERAI | 승용차, 버스, 지하철, 일반철도, 고속철도 |
+| ATT_AANT, ATT_OBUS | 승용차(접근), 버스(접근) |
+
+## 실행
+
+### 로컬
 ```bash
 pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-`.streamlit/secrets.toml` 파일이 필요합니다 (아래 설정 참조).
+`.streamlit/secrets.toml` 필요 (아래 참조).
 
-### Streamlit Cloud 배포
+### 배포
+Streamlit Cloud: `share.streamlit.io` → Settings → Secrets에 아래 내용 입력.
 
-1. https://share.streamlit.io 접속 → GitHub 로그인
-2. **New app** 클릭:
-   - Repository: `Yonghoon-Byun/KTDB_report_agent`
-   - Branch: `main`
-   - Main file: `streamlit_app.py`
-3. **Advanced settings** → **Secrets** 탭에 아래 내용 입력 (secrets.toml 형식)
-4. **Deploy** 클릭
-
----
-
-## 설정 (secrets.toml)
-
-로컬 실행 시 `.streamlit/secrets.toml`에, Streamlit Cloud 배포 시 Settings → Secrets에 입력.
+## secrets.toml 형식
 
 ```toml
-GEMINI_API_KEY = "Gemini API 키"
-
-SHEET_URL_SOCIO   = "https://docs.google.com/spreadsheets/d/..."
-SHEET_URL_OBJ_OD  = "https://docs.google.com/spreadsheets/d/..."
-SHEET_URL_MAIN_OD = "https://docs.google.com/spreadsheets/d/..."
-SHEET_URL_ACC_OD  = "https://docs.google.com/spreadsheets/d/..."
+GEMINI_API_KEY = "..."
+SHEET_URL_SOCIO   = "..."
+SHEET_URL_OBJ_OD  = "..."
+SHEET_URL_MAIN_OD = "..."
+SHEET_URL_ACC_OD  = "..."
 
 [gcp_service_account]
 type = "service_account"
-project_id = "프로젝트ID"
-private_key_id = "키ID"
+project_id = "..."
+private_key_id = "..."
 private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-client_email = "xxx@xxx.iam.gserviceaccount.com"
-client_id = "숫자ID"
+client_email = "...@...iam.gserviceaccount.com"
+client_id = "..."
 auth_uri = "https://accounts.google.com/o/oauth2/auth"
 token_uri = "https://oauth2.googleapis.com/token"
 ```
 
-### 사전 준비
+## 코드 규칙
 
-| 항목 | 취득 방법 |
-|------|----------|
-| Gemini API 키 | https://aistudio.google.com/apikey → Create API Key |
-| GCP 서비스 계정 | Google Cloud Console → API 및 서비스 → 사용자 인증 정보 → 서비스 계정 만들기 → JSON 키 다운로드 |
-| Google Sheets API | Google Cloud Console → API 라이브러리 → "Google Sheets API" + "Google Drive API" 활성화 |
-| Sheets 공유 | 서비스 계정의 `client_email`을 Google Sheets 4종에 **편집자** 권한으로 공유 |
+- `pd.to_numeric`에 **반드시 `errors="coerce"` 사용** (`errors="ignore"`는 pandas 2.2+에서 제거됨 → `ValueError: invalid error value specified` 발생)
+- OD 데이터는 콤마 포함 문자열 → `pd.to_numeric` 전에 `str.replace(",", "")` 필수
+- 보간 연도는 `*(보간)` 주석 표기
+- `secrets.toml`은 커밋 금지 (`.gitignore` 대상)
+- AI 프롬프트는 실제 데이터에 없는 수치 생성 금지
 
----
+## 알려진 이슈
 
-## 데이터 소스 (Google Sheets)
+진단 결과 상세: [`docs/왜-데이터-연동이-안되는가.md`](docs/왜-데이터-연동이-안되는가.md)
 
-| 데이터 | Secrets 키 | 용도 |
-|--------|-----------|------|
-| 사회경제지표 | `SHEET_URL_SOCIO` | 인구, 취업자, 종사자 등 지역별 통계 |
-| 목적OD | `SHEET_URL_OBJ_OD` | 출근/등교/업무/귀가/기타 통행량 |
-| 주수단OD | `SHEET_URL_MAIN_OD` | 승용차/버스/지하철/철도 수단별 통행량 |
-| 접근수단OD | `SHEET_URL_ACC_OD` | 접근수단별 통행량 |
+| 이슈 | 담당 | 상태 |
+|------|------|------|
+| 사회경제지표 6개 탭 C1 헤더 공백 (ZONE 헤더 누락) | 데이터팀 | 🔴 미수정 |
+| `streamlit_app.py:275` `errors="ignore"` + 콤마 처리 부재 | 개발자 | 🔴 미수정 |
+| OD 쿼리 지역 필터링용 ZONE 조인 미구현 | 개발자 | 🟡 추후 작업 |
+| `requirements.txt`에 `gspread`/`google-auth` 명시 누락 | 개발자 | 🟡 배포 시 문제 |
 
-### 시트별 탭 구성
-
-| 시트 | 탭 코드 | 설명 | 컬럼 |
-|------|---------|------|------|
-| 사회경제지표 | ZONE | 존체계(행정구역) | SIDO, SIGU, ZONE |
-| | POP_TOT | 총 인구수 | SIDO, SIGU, ZONE, 2023~2050 |
-| | POP_YNG | 5-24세 인구수 | (동일) |
-| | POP_15P | 15세이상 인구수 | (동일) |
-| | EMP | 취업자수 | (동일) |
-| | STU | 수용학생수 | (동일) |
-| | WORK_TOT | 종사자수 | (동일) |
-| 목적OD | PUR_{연도} | 목적OD (7탭) | ORGN, DEST, WORK, SCHO, BUSI, HOME, OTHE |
-| 주수단OD | MOD_{연도} | 주수단OD (7탭) | ORGN, DEST, AUTO, OBUS, SUBW, RAIL, ERAI |
-| 접근수단OD | ATTMOD_2023 | 접근수단OD (1탭) | ORGN, DEST, ATT_AANT, ATT_OBUS |
-
-- 배포 연도: `2023, 2025, 2030, 2035, 2040, 2045, 2050`
-- 단위: 사회경제지표 = 명, OD = 통행/일
-- Google Sheets 스키마 상세: `docs/SHEETS_SCHEMA_GUIDE.md` 참조
-
----
-
-## 시스템 아키텍처
-
-```
-[Google Sheets 4종]
-       |
-   [gspread + 서비스계정 인증]
-       |
-   [Streamlit App]
-       |
-   ┌───┴───┐
-   |       |
-[사이드바]  [채팅 UI]
- 시도/시군구   질문 입력
- 연도 선택       |
- 시트 선택   [AI 라우팅] ← Gemini (시트 자동 선택)
-       |       |
-   [데이터 로드 + 전처리]
-   · 콤마 제거 + 숫자 변환
-   · ZONE 탭 조인 (OD→시도/시군구 매핑)
-   · 지역 필터링
-   · 연도 보간
-   · 대용량 집계 (500행 초과 시)
-       |
-   [Gemini 분석]
-   · SYSTEM_PROMPT 기반
-   · 데이터 최대 250행 전달
-       |
-   [결과 출력]
-   · 요약 텍스트 + CSV 표
-   · CSV 다운로드 버튼
-```
-
----
+상세 실행 계획: [`.omc/plans/diagnose-and-fix-sheets-connectivity.md`](.omc/plans/diagnose-and-fix-sheets-connectivity.md)
 
 ## 파일 구조
 
 ```
 KTDB_report_agent/
-├── CLAUDE.md              # 프로젝트 문서 (본 파일)
-├── streamlit_app.py       # 메인 앱 (단일 파일)
+├── CLAUDE.md              # 본 파일
+├── streamlit_app.py       # 메인 앱
 ├── requirements.txt       # Python 의존성
 ├── .gitignore
 └── docs/
-    └── SHEETS_SCHEMA_GUIDE.md  # DB 구축 담당자용 Google Sheets 스키마 가이드
+    └── 왜-데이터-연동이-안되는가.md   # 비개발자용 진단 설명
 ```
-
-## 기술 스택
-
-- **언어**: Python 3.11+
-- **프론트엔드**: Streamlit
-- **AI/LLM**: Google Gemini 1.5 Flash (`google-generativeai`)
-- **데이터**: Google Sheets (`gspread`, `google-auth`)
-- **인증**: GCP 서비스 계정 (OAuth2)
-- **데이터 처리**: pandas
-
----
-
-## 컬럼 매핑 (영문 코드 → 한글)
-
-| 코드 | 한글 | 분류 |
-|------|------|------|
-| SIDO | 시도 | 지역 |
-| SIGU | 시군구 | 지역 |
-| ZONE | 존번호 | 지역 |
-| ORGN | 발생존 | OD |
-| DEST | 도착존 | OD |
-| 2023~2050 | 2023년~2050년 | 연도 |
-| WORK | 출근 | 목적 |
-| SCHO | 등교 | 목적 |
-| BUSI | 업무 | 목적 |
-| HOME | 귀가 | 목적 |
-| OTHE | 기타 | 목적 |
-| AUTO | 승용차 | 수단 |
-| OBUS | 버스 | 수단 |
-| SUBW | 지하철 | 수단 |
-| RAIL | 일반철도 | 수단 |
-| ERAI | 고속철도 | 수단 |
-| ATT_AANT | 승용차(접근) | 접근수단 |
-| ATT_OBUS | 버스(접근) | 접근수단 |
-
----
-
-## 개발 규칙
-
-- `secrets.toml`은 절대 커밋하지 않음 (`.gitignore` 대상)
-- 데이터 단위(명, 통행/일)를 항상 표에 명시
-- AI 프롬프트에서 실제 데이터에 없는 수치를 생성하지 않도록 제어
-- 보간 연도는 `*(보간)` 주석 표기
-- `pd.to_numeric`은 `errors="coerce"` 사용 (pandas 2.2+ 호환, `"ignore"` 사용 금지)
-
----
-
-## 주요 처리 로직
-
-### preprocess() — 전처리
-
-1. 천단위 콤마 제거 (`"19,800"` → `19800`)
-2. 숫자 변환 (`pd.to_numeric(errors="coerce")`)
-3. OD 데이터인 경우 ZONE 탭 조인으로 ORGN → 시도/시군구 매핑
-4. 시도/시군구 필터 적용
-5. 존번호/발생존 기준 정렬
-6. 영문 코드 → 한글 컬럼명 변환
-
-### load_integrated() — 통합 로드
-
-1. Google Sheets에서 데이터 로드
-2. `preprocess()` 호출
-3. 수치 컬럼 없으면 에러 (빈 데이터 방어)
-4. 연도 보간 (선형보간법)
-5. 500행 초과 시 시도/시군구별 집계
-
-### ai_route() — AI 시트 자동 선택
-
-- Gemini에 탭 코드 + 한글 설명 + 카테고리 힌트 전달
-- 인구/종사자 → 사회경제지표, 출근/통행목적 → 목적OD, 승용차/수단 → 주수단OD
-
----
-
-## 알려진 이슈 및 TODO
-
-- **사회경제지표 데이터 업로드 필요** — Google Sheets의 POP_TOT~WORK_TOT 탭에 연도별 데이터를 채워야 함 (`docs/SHEETS_SCHEMA_GUIDE.md` 참조)
