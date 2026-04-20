@@ -23,8 +23,7 @@ KTDB(국가교통DB) 데이터를 Google Sheets에서 읽어 Gemini AI로 자연
 ### 사회경제지표
 - 탭: `ZONE`, `POP_TOT`, `POP_YNG`, `POP_15P`, `EMP`, `STU`, `WORK_TOT` (영어 코드)
 - ZONE 탭 헤더: `SIDO, SIGU, ZONE`
-- 나머지 6개 탭 헤더: `SIDO, SIGU, <빈칸>, 2023, 2025, 2030, 2035, 2040, 2045, 2050`
-  - ⚠️ **C1 셀(3번째 컬럼 헤더)이 비어있음** — `ZONE`으로 입력 필요 (데이터팀 작업)
+- 나머지 6개 탭 헤더: `SIDO, SIGU, ZONE, 2023, 2025, 2030, 2035, 2040, 2045, 2050` (C1 헤더 입력 완료)
 
 ### 목적OD / 주수단OD
 - 탭: `PUR_{연도}` / `MOD_{연도}` (연도: 2023, 2025, 2030, 2035, 2040, 2045, 2050)
@@ -95,9 +94,9 @@ token_uri = "https://oauth2.googleapis.com/token"
 | 이슈 | 담당 | 상태 |
 |------|------|------|
 | 사회경제지표 6개 탭 C1 헤더 공백 (ZONE 헤더 누락) | 데이터팀 | ✅ 완료 (2026-04-18, POP_TOT 스크린샷 확인) |
-| `streamlit_app.py:275` `errors="ignore"` + 콤마 처리 부재 | 개발자 | 🔴 미수정 |
-| OD 쿼리 지역 필터링용 ZONE 조인 미구현 | 개발자 | 🟡 추후 작업 |
-| `requirements.txt`에 `gspread`/`google-auth` 명시 누락 | 개발자 | 🟡 배포 시 문제 |
+| `streamlit_app.py:275` `errors="ignore"` + 콤마 처리 부재 | 개발자 | ✅ 완료 (2026-04-20) |
+| OD 쿼리 지역 필터링용 ZONE 조인 미구현 | 개발자 | ✅ 완료 (2026-04-20) |
+| `requirements.txt`에 `gspread`/`google-auth` 명시 누락 | 개발자 | ✅ 완료 (2026-04-20) |
 
 상세 실행 계획: [`.omc/plans/diagnose-and-fix-sheets-connectivity.md`](.omc/plans/diagnose-and-fix-sheets-connectivity.md)
 
@@ -110,11 +109,16 @@ KTDB_report_agent/
 ├── requirements.txt                     # Python 의존성
 ├── .gitignore
 └── docs/
-    ├── 왜-데이터-연동이-안되는가.md     # 비개발자용 진단 설명 (※ 이슈 A는 완료, 일부 옛 정보)
+    ├── 왜-데이터-연동이-안되는가.md     # 비개발자용 진단 설명 (이슈 A는 완료, 일부 옛 정보)
     ├── 비개발자-수정-가이드.md          # 비개발자 오너용 단계별 수정 가이드
-    └── 개발자-전달-요청.md              # 개발자 전달용 미수정 이슈 정리 (B/C/D)
+    └── 수정사항 분석.md                 # 개발자 전달용 이슈 B/C/D 수정 사양 (2026-04-18)
 ```
 
 ## 변경 이력
 
 - **2026-04-18**: 이슈 A(사회경제지표 6개 탭 C1 헤더) 완료 확인 (POP_TOT 스크린샷 검증). 비개발자 수정 가이드 및 개발자 전달 요청 문서 신규 작성.
+- **2026-04-20**: 이슈 B/C/D 전부 완료.
+  - B: `streamlit_app.py` `preprocess()` 함수에 콤마 제거(`str.replace(",", "")`) + `pd.to_numeric(errors="coerce")` + NaN-only 보호 적용.
+  - C: `preprocess()` 선두에 ORGN→ZONE 머지 로직 추가. ZONE 탭 로드 실패 시 `st.warning`으로 열화 폴백. OD 데이터 지역 필터링 동작.
+  - D: `requirements.txt`에서 `st-gsheets-connection` 제거, `gspread>=5.0.0` + `google-auth>=2.0.0` 명시 (단일 커밋).
+  - 로컬 venv(uv) 구동 + 실제 시트 인증·로드 검증 완료. 서비스 계정: `ktdb-258@ktdb-493907.iam.gserviceaccount.com` (프로젝트 `ktdb-493907`, Google Sheets/Drive API 활성화 필요).

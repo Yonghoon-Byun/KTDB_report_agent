@@ -270,9 +270,21 @@ JSON 외 어떤 텍스트도 출력하지 마세요.
 # ─────────────────────────────────────────────────────────────
 def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    if "ORGN" in df.columns and "SIDO" not in df.columns:
+        try:
+            zone_df = load_sheet(st.secrets["SHEET_URL_SOCIO"], "ZONE")
+            zone_df = zone_df[["SIDO", "SIGU", "ZONE"]].copy()
+            zone_df["ZONE"] = zone_df["ZONE"].astype(str).str.strip()
+            df["ORGN"] = df["ORGN"].astype(str).str.strip()
+            df = df.merge(zone_df, how="left", left_on="ORGN", right_on="ZONE").drop(columns=["ZONE"])
+        except Exception as e:
+            st.warning(f"지역 필터링 불가: ZONE 데이터 로드 실패 ({e})")
     for col in df.columns:
         if col not in ("SIDO", "SIGU"):
-            df[col] = pd.to_numeric(df[col], errors="ignore")
+            cleaned = df[col].astype(str).str.replace(",", "", regex=False)
+            converted = pd.to_numeric(cleaned, errors="coerce")
+            if converted.notna().any():
+                df[col] = converted
     if "SIDO" in df.columns and sido_sel != "전체":
         df = df[df["SIDO"].astype(str).str.contains(sido_sel, na=False)]
     if "SIGU" in df.columns and sigu_sel != "전체":

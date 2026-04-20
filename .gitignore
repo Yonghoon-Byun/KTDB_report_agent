@@ -1,7 +1,12 @@
 .streamlit/secrets.toml
-*.xlsx:Zone.Identifier
+*:Zone.Identifier
 __pycache__/
 *.pyc
 .env
 .omc/
+venv/
+.venv/
+# 서비스 계정 키 (민감)
+ktdb-*.json
+*-service-account*.json
 

@@ -1,4 +1,5 @@
 streamlit
 google-generativeai>=0.8.0
-st-gsheets-connection
+gspread>=5.0.0
+google-auth>=2.0.0
 pandas
