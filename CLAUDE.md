@@ -5,7 +5,7 @@
 KTDB(국가교통DB) 데이터를 Google Sheets에서 읽어 Gemini AI로 자연어 분석하는 Streamlit 앱.
 
 - **프론트엔드**: Streamlit (단일 파일 `streamlit_app.py`)
-- **AI**: Google Gemini 1.5 Flash
+- **AI**: Google Gemini 2.5 Pro
 - **데이터**: Google Sheets 4종 (gspread + 서비스 계정)
 - **처리**: pandas
 
@@ -122,3 +122,8 @@ KTDB_report_agent/
   - C: `preprocess()` 선두에 ORGN→ZONE 머지 로직 추가. ZONE 탭 로드 실패 시 `st.warning`으로 열화 폴백. OD 데이터 지역 필터링 동작.
   - D: `requirements.txt`에서 `st-gsheets-connection` 제거, `gspread>=5.0.0` + `google-auth>=2.0.0` 명시 (단일 커밋).
   - 로컬 venv(uv) 구동 + 실제 시트 인증·로드 검증 완료. 서비스 계정: `ktdb-258@ktdb-493907.iam.gserviceaccount.com` (프로젝트 `ktdb-493907`, Google Sheets/Drive API 활성화 필요).
+- **2026-04-29**: Gemini 모델 마이그레이션 + 질의 분석 기능 확장.
+  - `gemini-1.5-flash` v1beta deprecation으로 `generate_content` 404 발생 → `gemini-2.5-pro`로 교체.
+  - `init_model()`에서 `genai.list_models()` 호출 제거 (첫 페이지 로딩 약 23초 단축).
+  - 채팅 본문 연도 자동 추출(`extract_years_from_query`), 시도/시군구별 합계 집계(`aggregate_by_region`), 화물 질의 감지 및 데이터 부재 안내(`detect_freight_query`) 추가.
+  - CSV 다운로드: `utf-8-sig` 인자 대신 BOM(`﻿`) 직접 prepend + `mime="text/csv; charset=utf-8"` 명시.

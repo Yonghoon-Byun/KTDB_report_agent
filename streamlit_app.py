@@ -5,6 +5,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import io
 import json
+import re
 
 # ─────────────────────────────────────────────────────────────
 # 1. 페이지 설정
@@ -24,10 +25,7 @@ thead tr th { background: #f0f2f6; font-weight: 600; }
 @st.cache_resource
 def init_model():
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    models = [m.name for m in genai.list_models()
-              if 'generateContent' in m.supported_generation_methods]
-    name = next((m for m in models if "1.5-flash" in m), models[0])
-    return genai.GenerativeModel(name)
+    return genai.GenerativeModel("gemini-2.5-pro")
 
 try:
     model = init_model()
@@ -344,6 +342,36 @@ def load_integrated(file_label: str, tab: str,
     return df, interp
 
 # ─────────────────────────────────────────────────────────────
+# 12-bis. 질의 분석 헬퍼 (연도 추출 / 지역집계 / 화물 감지)
+# ─────────────────────────────────────────────────────────────
+def extract_years_from_query(query: str) -> list[int]:
+    return [int(y) for y in re.findall(r"\b(20\d{2})\b", query)]
+
+def detect_aggregation(query: str) -> str | None:
+    if any(k in query for k in ["시군구별", "시군구 별"]):
+        return "시군구"
+    if any(k in query for k in [
+        "시도별", "시도 별", "지역별", "지역 별",
+        "지역 분포", "지역분포", "통행분포", "통행 분포"
+    ]):
+        return "시도"
+    return None
+
+def detect_freight_query(query: str) -> bool:
+    return any(k in query for k in ["화물", "freight", "물류"])
+
+def aggregate_by_region(df: pd.DataFrame, level: str) -> pd.DataFrame:
+    if level not in df.columns:
+        return df
+    skip = {"존번호", "발생존", "도착존"}
+    numeric_cols = [
+        c for c in df.select_dtypes(include="number").columns if c not in skip
+    ]
+    if not numeric_cols:
+        return df
+    return df.groupby(level)[numeric_cols].sum().reset_index()
+
+# ─────────────────────────────────────────────────────────────
 # 13. AI 분석 프롬프트 규칙
 # ─────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """당신은 KTDB 전문 분석가입니다. 아래 규칙을 엄격히 따르세요.
@@ -371,12 +399,12 @@ for msg in st.session_state.messages:
         if "df" in msg:
             df_show = msg["df"].T if st.session_state.transpose else msg["df"]
             st.dataframe(df_show, use_container_width=True)
-            csv_str = msg["df"].to_csv(index=False, encoding="utf-8-sig")
+            csv_bytes = ("\ufeff" + msg["df"].to_csv(index=False)).encode("utf-8")
             st.download_button(
                 "📋 CSV 다운로드",
-                data=csv_str,
+                data=csv_bytes,
                 file_name="ktdb_result.csv",
-                mime="text/csv",
+                mime="text/csv; charset=utf-8",
                 key=f"dl_{id(msg)}"
             )
 
@@ -412,8 +440,9 @@ if user_input := st.chat_input("질문을 입력하세요 — 예: 경기도 203
             tab_kr = SHEET_CONFIG[ai_file]["tabs"].get(ai_tab, ai_tab)
             st.caption(f"📂 AI 자동 선택: **{ai_file}** > **{tab_kr}**")
 
-        # ② 연도 결정
-        target_years = get_user_years()
+        # ② 연도 결정 (사이드바 입력 + 채팅 본문에서 추출)
+        chat_years   = extract_years_from_query(user_input)
+        target_years = sorted(set(get_user_years() + chat_years))
 
         # ③ 데이터 로드
         with st.spinner(f"`{ai_tab}` 데이터 로딩 중..."):
@@ -429,14 +458,40 @@ if user_input := st.chat_input("질문을 입력하세요 — 예: 경기도 203
             if interp_years else ""
         )
 
+        # ③-bis. 화물 질의 안내 (KTDB 시트는 여객 데이터만 보유)
+        freight_requested = detect_freight_query(user_input)
+        if freight_requested:
+            st.warning(
+                "⚠️ 현재 연결된 KTDB 시트는 **여객(passenger) 데이터만** 포함합니다. "
+                "화물(freight) 통행량은 별도 시트가 필요하므로 본 분석에서는 제외됩니다."
+            )
+
+        # ③-ter. 지역별 집계 (요청된 경우 SIDO 또는 SIGU 합계로 축약)
+        agg_level = detect_aggregation(user_input)
+        df_for_ai = df
+        agg_note  = ""
+        if agg_level and agg_level in df.columns:
+            df_for_ai = aggregate_by_region(df, agg_level)
+            agg_note  = f"\n※ {agg_level}별 합계 집계 완료 ({len(df_for_ai)}행)"
+            st.caption(f"📊 {agg_level}별 합계로 집계됨 ({len(df_for_ai)}행)")
+
         # ④ AI 분석
-        data_sample = df.head(150).to_string(index=False)
+        max_rows    = 300 if agg_level else 150
+        data_sample = df_for_ai.head(max_rows).to_string(index=False)
+        freight_note = (
+            "\n\n[중요 안내]\n"
+            "본 시트에는 화물(freight) 데이터가 존재하지 않습니다. "
+            "화물 관련 수치는 절대 생성·추정하지 말고, 응답 모두에 그 사실을 명시하세요."
+            if freight_requested else ""
+        )
         prompt = (
             f"{SYSTEM_PROMPT}\n\n"
             f"[데이터 정보]\n"
-            f"파일: {ai_file} / 시트: {tab_kr} / 단위: {unit}{interp_note}\n"
-            f"컬럼: {list(df.columns)}\n"
-            f"데이터(최대 150행):\n{data_sample}\n\n"
+            f"파일: {ai_file} / 시트: {tab_kr} / 단위: {unit}"
+            f"{interp_note}{agg_note}\n"
+            f"컬럼: {list(df_for_ai.columns)}\n"
+            f"데이터(최대 {max_rows}행):\n{data_sample}"
+            f"{freight_note}\n\n"
             f"[질문]\n{user_input}"
         )
 
@@ -455,12 +510,12 @@ if user_input := st.chat_input("질문을 입력하세요 — 예: 경기도 203
                 res_df  = pd.read_csv(io.StringIO(csv_raw))
                 df_show = res_df.T if st.session_state.transpose else res_df
                 st.dataframe(df_show, use_container_width=True)
-                csv_dl  = res_df.to_csv(index=False, encoding="utf-8-sig")
+                csv_dl = ("\ufeff" + res_df.to_csv(index=False)).encode("utf-8")
                 st.download_button(
                     "📋 CSV 다운로드",
                     data=csv_dl,
                     file_name="ktdb_result.csv",
-                    mime="text/csv"
+                    mime="text/csv; charset=utf-8"
                 )
                 new_msg["df"] = res_df
             except Exception:
