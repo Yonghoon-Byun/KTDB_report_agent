@@ -6,6 +6,7 @@ __pycache__/
 .omc/
 venv/
 .venv/
+.venv-win/
 # 서비스 계정 키 (민감)
 ktdb-*.json
 *-service-account*.json
