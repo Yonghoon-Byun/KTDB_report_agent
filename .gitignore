@@ -17,4 +17,6 @@ ktdb-*.json
 원본자료/
 # Claude Code 세션 로컬
 .claude/
+# 사내 분배 패키지 (R/O 자격증명 평문 포함, 절대 커밋 금지)
+dist/
 
