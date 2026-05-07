@@ -10,4 +10,11 @@ venv/
 # 서비스 계정 키 (민감)
 ktdb-*.json
 *-service-account*.json
+# 임시 추출/캐시
+.tmp_extract/
+*.parquet
+# KTDB 원본 zip (~989MB)
+원본자료/
+# Claude Code 세션 로컬
+.claude/
 
