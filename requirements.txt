@@ -3,4 +3,5 @@ google-generativeai>=0.8.0
 pandas
 psycopg2-binary>=2.9.0
 openpyxl>=3.1.0           # zones 마스터 (.xlsx) 파싱 — sync_smr.py
+tabulate>=0.9.0           # df.to_markdown() — LLM 자연어 해설 컨텍스트 직렬화
 tomli>=2.0.0;python_version<"3.11"  # Python <3.11 fallback (3.11+은 stdlib tomllib)

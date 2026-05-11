@@ -560,6 +560,7 @@ def load_od(
     origin_scope: str | None = None,
     dest_scope: str | None = None,
     pre_aggregate_level: str | None = None,
+    exclude_self_dest: str | None = None,
 ) -> pd.DataFrame:
     """OD 데이터 로드. 필터·집계는 SQL 단계에 푸시다운하여 1.5M → 수만/수십 행으로 축소.
 
@@ -608,6 +609,12 @@ def load_od(
         where.append(f"zd.sido IN {inner_sidos_sql}")
     elif dest_scope == "outer":
         where.append(f"zd.sido NOT IN {inner_sidos_sql}")
+
+    # "다른 지역으로의 통행" — origin과 같은 시도/시군구를 도착지에서 제외
+    if exclude_self_dest == "sido":
+        where.append("zd.sido <> zo.sido")
+    elif exclude_self_dest == "sigu":
+        where.append("(zd.sido <> zo.sido OR zd.sigu <> zo.sigu)")
 
     where_sql = " AND ".join(where)
 
@@ -665,6 +672,7 @@ def load_sheet_compat(
     origin_scope: str | None = None,
     dest_scope: str | None = None,
     pre_aggregate_level: str | None = None,
+    exclude_self_dest: str | None = None,
 ) -> pd.DataFrame:
     if file_label == "사회경제지표":
         if tab == "ZONE":
@@ -678,6 +686,7 @@ def load_sheet_compat(
         origin_scope=origin_scope,
         dest_scope=dest_scope,
         pre_aggregate_level=pre_aggregate_level,
+        exclude_self_dest=exclude_self_dest,
     )
     if file_label == "목적OD":
         return load_od(backend, "od_purpose", int(tab.split("_")[1]), **od_kwargs)
@@ -943,6 +952,7 @@ def load_integrated(
     origin_scope: str | None = None,
     dest_scope: str | None = None,
     pre_aggregate_level: str | None = None,
+    exclude_self_dest: str | None = None,
 ) -> tuple[pd.DataFrame, list[int]]:
     # OD 데이터: SQL 단계 필터·집계로 행수 1.5M → 수십~수백 행으로 축소 (성능 최적화)
     df = load_sheet_compat(
@@ -956,6 +966,7 @@ def load_integrated(
         origin_scope=origin_scope,
         dest_scope=dest_scope,
         pre_aggregate_level=pre_aggregate_level,
+        exclude_self_dest=exclude_self_dest,
     )
     df = preprocess(
         df,
@@ -1003,17 +1014,37 @@ def extract_years_from_query(query: str) -> list[int]:
 
 
 def detect_aggregation(query: str) -> str | None:
-    # 도착지 키워드 우선 — "도착지 시군구" / "도착지별 시도" 등
-    has_dest = any(k in query for k in ["도착지", "도착시", "도착 시", "목적지"])
+    # 도착지 키워드 우선 — "도착지 시군구" / "도착지별 시도" / "다른 지역으로" 등
+    has_dest = any(k in query for k in [
+        "도착지", "도착시", "도착 시", "목적지",
+        "다른 지역", "다른지역", "타 지역", "타지역",
+        "다른 시도", "다른시도", "타 시도", "타시도",
+        "다른 시군구", "다른시군구", "타 시군구", "타시군구",
+    ])
     if has_dest:
         if any(k in query for k in ["시군구", "구별", "시별"]):
             return "도착시군구"
         if any(k in query for k in ["시도", "도별"]):
             return "도착시도"
-    if any(k in query for k in ["시군구별", "시군구 별"]):
+        # 도착지 의도는 있지만 단위 미명시 → 시도 단위 기본
+        return "도착시도"
+    # 시군구 단위 — "시군구별/시군구 중/어느 시군구/어떤 시군구"
+    if any(k in query for k in [
+        "시군구별", "시군구 별", "시군구중", "시군구 중",
+        "어느 시군구", "어떤 시군구",
+    ]):
         return "시군구"
-    if any(k in query for k in ["시도별", "시도 별", "지역별", "지역 별", "지역 분포", "지역분포"]):
+    # 시도 단위 — "시도별/시도 중/지역별/지역 중/어느 시도·지역"
+    if any(k in query for k in [
+        "시도별", "시도 별", "시도중", "시도 중",
+        "지역별", "지역 별", "지역 분포", "지역분포",
+        "지역 중", "지역중",
+        "어느 시도", "어떤 시도", "어느 지역", "어떤 지역",
+    ]):
         return "시도"
+    # 의문문 단독 fallback — 위치 묻는 질의 → 시군구 (수도권 데이터 기준 의미 있음)
+    if any(k in query for k in ["어디야", "어디인지", "어디일까", "어디입니까", "어디입"]):
+        return "시군구"
     return None
 
 
@@ -1036,6 +1067,61 @@ def detect_top_n(query: str) -> int | None:
     # N 미명시 + 정렬 의도만 있는 경우 → 기본 20
     if any(t in query for t in ["내림차순", "오름차순"]):
         return 20
+    # 의문문 + 지역 단위 → 기본 10 ("어느 시군구 / 어떤 지역 / 어디" 등)
+    if any(k in query for k in [
+        "어느 시군구", "어떤 시군구", "어느 시도", "어떤 시도",
+        "어느 지역", "어떤 지역", "어디야", "어디인지", "어디일까", "어디입",
+    ]):
+        return 10
+    return None
+
+
+_TREND_UP_KW = (
+    "높아지는", "높아질", "높아", "증가", "증가하는",
+    "늘어나는", "늘어", "늘", "상승", "상승하는",
+    "오르는", "오를", "올라가는",
+)
+_TREND_DOWN_KW = (
+    "낮아지는", "낮아질", "낮아", "감소", "감소하는",
+    "줄어드는", "줄어", "하락", "하락하는",
+    "내리는", "내려가는",
+)
+_TREND_NEUTRAL_KW = (
+    "변화율", "변화", "증감률", "증감", "추이", "추세", "대비",
+)
+
+
+def detect_exclude_self_dest(query: str) -> str | None:
+    """origin과 같은 지역을 도착지에서 제외하는 수준.
+
+    - "sigu": 같은 시군구 제외 (다른 시군구는 포함)
+    - "sido": 같은 시도 제외 ("다른 지역 / 타 지역" 등 광범위 표현)
+    - None: 제외 없음
+    """
+    if any(k in query for k in ["다른 시군구", "다른시군구", "타 시군구", "타시군구"]):
+        return "sigu"
+    if any(k in query for k in [
+        "다른 지역", "다른지역", "타 지역", "타지역",
+        "다른 시도", "다른시도", "타 시도", "타시도",
+    ]):
+        return "sido"
+    return None
+
+
+def detect_trend_intent(query: str) -> str | None:
+    """시계열 변화 의도 감지.
+
+    - "up": 높아지는/증가/늘어나는 등 → 증가폭 큰 순으로 정렬
+    - "down": 낮아지는/감소/줄어드는 등 → 감소폭 큰 순으로 정렬
+    - "any": 변화율/추이/추세/증감률 — 방향 미지정, 절댓값 또는 부호 그대로
+    - None: 변화 의도 없음
+    """
+    if any(k in query for k in _TREND_UP_KW):
+        return "up"
+    if any(k in query for k in _TREND_DOWN_KW):
+        return "down"
+    if any(k in query for k in _TREND_NEUTRAL_KW):
+        return "any"
     return None
 
 
@@ -1148,10 +1234,6 @@ def auto_route(query: str, backend: str, target_years: list[int]) -> list[tuple[
             _append_combo(combos, ("사회경제지표", "WORK_TOT"))
 
     od_years = _od_tab_years(target_years)
-    if any(token in query for token in ["통행", "od", "출근", "등교", "귀가", "업무", "기타"]):
-        if "목적OD" in config:
-            for year in od_years:
-                _append_combo(combos, ("목적OD", f"PUR_{year}"))
 
     mode_tokens = [
         "도보",
@@ -1168,10 +1250,20 @@ def auto_route(query: str, backend: str, target_years: list[int]) -> list[tuple[
         "주수단",
     ]
     mode_present = any(token in lowered for token in mode_tokens)
-    if mode_present:
-        if "주수단OD" in config:
+    purpose_present = any(t in query for t in ["출근", "등교", "귀가", "업무", "기타", "목적"])
+    trip_kw = any(t in query for t in ["통행", "od"])
+
+    # 목적OD 라우팅 — 목적 키워드 있거나, 수단 미명시 + 일반 "통행/od" 키워드일 때만.
+    # ("수단" + "통행"이 동시 등장하면 사용자는 수단 분포를 원한 것 → 목적OD 라우팅 안 함)
+    if "목적OD" in config:
+        if purpose_present or (trip_kw and not mode_present):
             for year in od_years:
-                _append_combo(combos, ("주수단OD", f"MOD_{year}"))
+                _append_combo(combos, ("목적OD", f"PUR_{year}"))
+
+    # 주수단OD 라우팅 — 수단 키워드 있을 때
+    if mode_present and "주수단OD" in config:
+        for year in od_years:
+            _append_combo(combos, ("주수단OD", f"MOD_{year}"))
 
     # 목적별주수단OD: (1) 명시 키워드 → 4목적 모두, (2) 수단 + 목적 키워드 동시 → 매칭 목적만
     explicit_pm = any(
@@ -1325,11 +1417,13 @@ def add_ratio_columns(df: pd.DataFrame, query: str) -> pd.DataFrame:
 def add_change_columns(df: pd.DataFrame, query: str) -> pd.DataFrame:
     """연도 간 증감률(%) 컬럼 추가.
 
-    트리거: "증감률" / "변화율" / "변화" / "대비".
+    트리거: detect_trend_intent — "증감률/변화율/변화/대비" 외에
+    "높아지는/낮아지는/증가/감소/늘어나는/줄어드는/상승/하락" 등도 포함.
+
     - "연도별 증감률" 키워드 → 인접 연도 쌍 모두 (예: 2023→2025, 2025→2030, ...)
     - 그 외 → 첫 연도 vs 마지막 연도 단일 비교
     """
-    if not any(k in query for k in ["증감률", "변화율", "변화", "대비"]):
+    if detect_trend_intent(query) is None:
         return df
     if df is None or df.empty:
         return df
@@ -1434,20 +1528,55 @@ def add_cagr_columns(df: pd.DataFrame, query: str) -> pd.DataFrame:
     return df
 
 
+def _metric_base_name(col: str) -> str:
+    """metric 컬럼명에서 base 단어만 추출 (연도/(%)/증감률/CAGR 토큰 제거).
+
+    예) "일반철도 2025→2050 증감률(%)" → "일반철도"
+        "출근 (2023년) 비율(%)"        → "출근"
+        "KTX (2050년)"                 → "KTX"
+    """
+    s = col
+    s = re.sub(r"\s*\(%\)\s*$", "", s)
+    s = re.sub(r"\b(증감률|CAGR|cagr|변화율|비율|분담률)\b", "", s)
+    s = re.sub(r"\d{4}\s*[~→]\s*\d{4}", "", s)
+    s = re.sub(r"\s*\([^)]*\)\s*", "", s)
+    s = re.sub(r"\s*\d{4}\s*년?\s*", "", s)
+    return s.strip()
+
+
 def _pick_sort_column(df: pd.DataFrame, query: str) -> str | None:
-    """TOP N 정렬 시 사용할 metric 컬럼 선택. query 키워드와 컬럼명 매칭 우선."""
+    """TOP N 정렬 시 사용할 metric 컬럼 선택.
+
+    1. trend 의도("높아지는/감소" 등)가 있으면 CAGR > 증감률 컬럼 우선.
+       query에 등장하는 metric base와 일치하는 것 우선 (예: "일반철도" → 일반철도 증감률).
+    2. 그 외에는 query 키워드와 일치하는 metric 컬럼 우선 (예: "출근" → "출근 (2023년)").
+    3. fallback: 합계 최대인 컬럼.
+    """
     candidates = [
         c for c in df.select_dtypes(include="number").columns
         if c not in {"존번호", "발생존", "도착존"}
     ]
     if not candidates:
         return None
-    # query에 등장하는 단어와 일치하는 metric 컬럼 우선 (예: "출근" → "출근 (2023년)")
+
+    trend = detect_trend_intent(query)
+    if trend in ("up", "down"):
+        cagr_cols = [c for c in candidates if "CAGR" in c]
+        change_cols = [c for c in candidates if "증감률" in c]
+        for pool in (cagr_cols, change_cols):
+            for col in pool:
+                base = _metric_base_name(col)
+                if base and base in query:
+                    return col
+        if cagr_cols:
+            return cagr_cols[0]
+        if change_cols:
+            return change_cols[0]
+
     for col in candidates:
-        base = re.sub(r"\s*\([^)]*\)\s*", "", col).strip()
+        base = _metric_base_name(col)
         if base and base in query:
             return col
-    # fallback: 합계 최대인 컬럼
     valid = [c for c in candidates if df[c].fillna(0).sum() > 0]
     if valid:
         return max(valid, key=lambda c: df[c].fillna(0).sum())
@@ -1455,7 +1584,13 @@ def _pick_sort_column(df: pd.DataFrame, query: str) -> str | None:
 
 
 def apply_top_n(tables: list[dict], n: int, query: str) -> list[dict]:
-    """각 결과 표에 대해 metric 컬럼 기준 내림차순 + head(n)."""
+    """각 결과 표에 대해 metric 컬럼 기준 정렬 + head(n).
+
+    정렬 방향: trend "down" → 오름차순 (감소폭/낮은 값 우선), 그 외 → 내림차순.
+    """
+    trend = detect_trend_intent(query)
+    ascending = trend == "down"
+    direction_label = "오름차순" if ascending else "내림차순"
     for t in tables:
         df = t["df"]
         if df is None or df.empty:
@@ -1463,15 +1598,26 @@ def apply_top_n(tables: list[dict], n: int, query: str) -> list[dict]:
         sort_col = _pick_sort_column(df, query)
         if sort_col is None:
             continue
-        t["df"] = df.sort_values(sort_col, ascending=False, na_position="last").head(n).reset_index(drop=True)
-        suffix = f" `{sort_col}` 기준 상위 {n}개로 정렬."
+        t["df"] = df.sort_values(sort_col, ascending=ascending, na_position="last").head(n).reset_index(drop=True)
+        suffix = f" `{sort_col}` {direction_label} 상위 {n}개로 정렬."
         t["note"] = ((t.get("note") or "") + suffix).strip()
     return tables
 
 
 def needs_llm_summary(query: str) -> bool:
-    """질의에 보고서/분석/문장 키워드가 있으면 LLM 요약 호출."""
-    return any(k in query for k in ["문장", "보고서", "분석", "요약", "설명", "해설", "기술", "서술"])
+    """LLM 자연어 해설 트리거.
+
+    1) 명시 키워드: "문장/보고서/분석/요약/설명/해설/기술/서술"
+    2) 의문문: "어디/어느/어떤/얼마/왜/무엇/뭐가/어떻게"  → 표만으로는 답이 안 됨
+    3) 시계열 변화 의도: detect_trend_intent — 결과 해설 필요
+    """
+    if any(k in query for k in ["문장", "보고서", "분석", "요약", "설명", "해설", "기술", "서술"]):
+        return True
+    if any(k in query for k in ["어디", "어느", "어떤", "얼마", "왜 ", "무엇", "뭐가", "어떻게"]):
+        return True
+    if detect_trend_intent(query) is not None:
+        return True
+    return False
 
 
 def generate_llm_summary(model_, tables: list[dict], query: str) -> str:
@@ -1528,10 +1674,12 @@ def build_result_tables(datasets: list[dict], query: str, target_years: list[int
         parts = [build_display_part(item, query, target_years) for item in items]
         merged = sort_result_frame(merge_parts(parts))
         compacted, note = compact_large_result(merged)
+        # df_full: 축약 전 전체 데이터 — CSV 다운로드 전용. 화면 표시는 df(compacted) 사용.
         tables.append(
             {
                 "title": file_label,
                 "df": compacted,
+                "df_full": merged if note else None,
                 "note": note,
                 "unit": UNITS.get(file_label, ""),
             }
@@ -1585,9 +1733,16 @@ def render_tables(tables: list[dict], message_idx: int) -> None:
         df = table["df"]
         df_show = df.T if st.session_state.transpose else df
         st.dataframe(df_show, use_container_width=True)
-        csv_bytes = ("\ufeff" + df.to_csv(index=False)).encode("utf-8")
+        # CSV는 축약 전 전체 데이터(df_full)가 있으면 그걸로, 없으면 표시용 df로.
+        df_csv = table.get("df_full") if table.get("df_full") is not None else df
+        csv_bytes = ("\ufeff" + df_csv.to_csv(index=False)).encode("utf-8")
+        csv_label = (
+            f"CSV 다운로드 (전체 {len(df_csv):,}행)"
+            if table.get("df_full") is not None
+            else "CSV 다운로드"
+        )
         st.download_button(
-            "CSV 다운로드",
+            csv_label,
             data=csv_bytes,
             file_name=f"ktdb_result_{message_idx}_{table_idx}.csv",
             mime="text/csv; charset=utf-8",
@@ -1646,21 +1801,24 @@ with st.sidebar:
         else:
             st.session_state.sel_file = selected_file
             tab_options = list(dataset_config[selected_file]["tabs"].keys())
-            tab_labels = ["— 시트를 선택하세요 —"] + [
-                f"{tab} — {dataset_config[selected_file]['tabs'][tab]}" for tab in tab_options
-            ]
-            current_tab_display = (
-                f"{st.session_state.sel_tab} — {dataset_config[selected_file]['tabs'].get(st.session_state.sel_tab, '')}"
+            tab_choices = ["— 시트를 선택하세요 —"] + tab_options
+            current_tab_idx = (
+                tab_choices.index(st.session_state.sel_tab)
                 if st.session_state.sel_tab in tab_options
-                else "— 시트를 선택하세요 —"
+                else 0
             )
-            current_tab_idx = tab_labels.index(current_tab_display) if current_tab_display in tab_labels else 0
-            selected_tab_label = st.selectbox("시트(탭)", tab_labels, index=current_tab_idx)
-            if selected_tab_label == "— 시트를 선택하세요 —":
+            tab_kr_map = dataset_config[selected_file]["tabs"]
+            selected_tab = st.selectbox(
+                "시트(탭)",
+                tab_choices,
+                index=current_tab_idx,
+                format_func=lambda key: key if key == "— 시트를 선택하세요 —" else tab_kr_map.get(key, key),
+            )
+            if selected_tab == "— 시트를 선택하세요 —":
                 st.session_state.sel_tab = None
             else:
-                st.session_state.sel_tab = tab_options[tab_labels.index(selected_tab_label) - 1]
-                st.caption(f"고정: `{selected_file}` > `{st.session_state.sel_tab}`")
+                st.session_state.sel_tab = selected_tab
+                st.caption(f"고정: `{selected_file}` > `{tab_kr_map.get(selected_tab, selected_tab)}`")
     else:
         st.caption("질문 키워드와 연도를 기준으로 자동 라우팅합니다.")
         if model is None:
@@ -1739,6 +1897,7 @@ if user_input := st.chat_input("질문을 입력하세요 — 예: 경기도 203
         top_n = detect_top_n(user_input)
         (o_sido, o_sigu), (d_sido, d_sigu) = extract_od_pair_from_query(backend, user_input)
         origin_scope, dest_scope = detect_region_scope(user_input)
+        exclude_self_dest = detect_exclude_self_dest(user_input)
         auto_sido, auto_sigu = (o_sido, o_sigu)
 
         # OD 사전 집계 결정 — 도착지 분석 의도가 없고 origin/시군구 단위 합계만 원할 때
@@ -1777,6 +1936,7 @@ if user_input := st.chat_input("질문을 입력하세요 — 예: 경기도 203
                         origin_scope=origin_scope,
                         dest_scope=dest_scope,
                         pre_aggregate_level=pre_agg_for_combo,
+                        exclude_self_dest=exclude_self_dest,
                     )
                     df_for_display = aggregate_by_region(df, agg_level) if agg_level else df
                     datasets.append(
@@ -1796,12 +1956,18 @@ if user_input := st.chat_input("질문을 입력하세요 — 예: 경기도 203
         tables = build_result_tables(datasets, user_input, target_years)
         # 후처리 순서: 비율 → 증감률 → CAGR → 단위 변환
         # (단위 변환은 raw count metric에만 적용; 비율/증감률 컬럼은 원래 무단위 %)
+        # df_full(축약 전 CSV용)에도 동일 후처리 적용. apply_top_n은 표시용(df)에만 적용.
         unit_label = None
         for _t in tables:
             _t["df"] = add_ratio_columns(_t["df"], user_input)
             _t["df"] = add_change_columns(_t["df"], user_input)
             _t["df"] = add_cagr_columns(_t["df"], user_input)
             _t["df"], _u = apply_unit_scale(_t["df"], user_input)
+            if _t.get("df_full") is not None:
+                _t["df_full"] = add_ratio_columns(_t["df_full"], user_input)
+                _t["df_full"] = add_change_columns(_t["df_full"], user_input)
+                _t["df_full"] = add_cagr_columns(_t["df_full"], user_input)
+                _t["df_full"], _ = apply_unit_scale(_t["df_full"], user_input)
             if _u and not unit_label:
                 unit_label = _u
         if top_n:
